@@ -1,0 +1,73 @@
+import asyncio
+import os
+from aiogram import Bot, Dispatcher
+from aiogram.types import Message, FSInputFile
+from aiogram.filters import CommandStart
+import yt_dlp
+
+TOKEN = "7992634454:AAGYAg70kCp5ye79FeuerTAnsgMe5Gg4zZY"
+
+bot = Bot(token=TOKEN)
+dp = Dispatcher()
+
+DOWNLOAD_PATH = "downloads"
+os.makedirs(DOWNLOAD_PATH, exist_ok=True)
+
+AD_TEXT = "\n\n📢 Подписывайтесь: @your_channel"
+
+
+def download_video(url):
+    ydl_opts = {
+        'outtmpl': f'{DOWNLOAD_PATH}/%(title)s.%(ext)s',
+        'format': 'mp4',  # важно!
+        'noplaylist': True,
+        'quiet': True
+    }
+
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(url, download=True)
+        return ydl.prepare_filename(info)
+
+
+@dp.message(CommandStart())
+async def start(message: Message):
+    await message.answer("Отправь ссылку 📎")
+
+
+@dp.message()
+async def handler(message: Message):
+    url = message.text.strip()
+
+    if "http" not in url:
+        await message.answer("❌ Нужна ссылка")
+        return
+
+    await message.answer("⏳ Скачиваю...")
+
+    try:
+        file_path = download_video(url)
+
+        # Проверка существования файла
+        if not os.path.exists(file_path):
+            await message.answer("❌ Файл не найден после загрузки")
+            return
+
+        video = FSInputFile(file_path)
+
+        await message.answer_video(
+            video=video,
+            caption="Готово 🎉" + AD_TEXT
+        )
+
+        os.remove(file_path)
+
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {e}")
+
+
+async def main():
+    print("Бот работает 🚀")
+    await dp.start_polling(bot)
+    
+if os.name == "main":
+    asyncio.run(main())
