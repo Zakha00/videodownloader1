@@ -15,29 +15,26 @@ import database as db
 from downloader import cleanup, download_video, is_valid_url, FREE_LIMIT
 from keyboards import check_again_keyboard, subscribe_keyboard
 
-# ─── Логирование ────────────────────────────────────────────────────────────
+# ─── Логирование ─────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger(__name__)
 
-# ─── Конфиг ─────────────────────────────────────────────────────────────────
+# ─── Конфиг ──────────────────────────────────────────────────────────────────
 TOKEN = os.getenv("BOT_TOKEN", "")
 ADMIN_IDS = [int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip()]
 
-# Канал для подписки — замени на свой!
-CHANNEL_ID = os.getenv("CHANNEL_ID", "@your_channel")          # @username или -100xxxxxxxxxx
+CHANNEL_ID = os.getenv("CHANNEL_ID", "@your_channel")
 CHANNEL_URL = os.getenv("CHANNEL_URL", "https://t.me/your_channel")
 CHANNEL_NAME = os.getenv("CHANNEL_NAME", "Наш канал")
 
-# Реклама в подписи к видео
 AD_CAPTION = f"📥 Скачано через бот\n🔥 Подписывайся: {CHANNEL_URL}"
 
-# ─── Антиспам (in-memory, достаточно для 100k при правильном деплое) ────────
-# user_id -> timestamp последнего запроса
+# ─── Антиспам ────────────────────────────────────────────────────────────────
 _last_request: dict[int, float] = defaultdict(float)
-RATE_LIMIT_SECONDS = 10  # одно видео в 10 секунд
+RATE_LIMIT_SECONDS = 10
 
 
 def is_rate_limited(user_id: int) -> bool:
@@ -48,7 +45,7 @@ def is_rate_limited(user_id: int) -> bool:
     return False
 
 
-# ─── Web-сервер для Render ───────────────────────────────────────────────────
+# ─── Web-сервер для Render ────────────────────────────────────────────────────
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -56,7 +53,7 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(b"Bot is running")
 
     def log_message(self, *args):
-        pass  # Отключаем лишние логи
+        pass
 
 
 def run_web():
@@ -65,31 +62,32 @@ def run_web():
     server.serve_forever()
 
 
-# ─── Bot & Dispatcher ────────────────────────────────────────────────────────
-bot = Bot(token=TOKEN)
+# ─── Bot & Dispatcher ─────────────────────────────────────────────────────────
+bot: Bot | None = None
 dp = Dispatcher()
 
 
-# ─── Проверка подписки ───────────────────────────────────────────────────────
+# ─── Проверка подписки ────────────────────────────────────────────────────────
 async def check_subscription(user_id: int) -> bool:
+    if bot is None:
+        return True
     try:
         member = await bot.get_chat_member(CHANNEL_ID, user_id)
         return member.status not in ("left", "kicked", "banned")
     except Exception:
-        # Если бот не добавлен в канал или канал неверный — пропускаем
         logger.warning("Не удалось проверить подписку, пропускаем")
         return True
 
 
-# ─── Команды ────────────────────────────────────────────────────────────────
+# ─── /start ──────────────────────────────────────────────────────────────────
 @dp.message(CommandStart())
 async def cmd_start(message: Message):
-    await db.upsert_user(
+    db.upsert_user(
         message.from_user.id,
         message.from_user.username or "",
         message.from_user.first_name or "",
     )
-    count = await db.get_download_count(message.from_user.id)
+    count = db.get_download_count(message.from_user.id)
     remaining = max(0, FREE_LIMIT - count)
 
     text = (
@@ -103,10 +101,10 @@ async def cmd_start(message: Message):
     await message.answer(text, parse_mode="HTML")
 
 
+# ─── /stats ───────────────────────────────────────────────────────────────────
 @dp.message(Command("stats"))
 async def cmd_stats(message: Message):
-    """Статистика для пользователя."""
-    count = await db.get_download_count(message.from_user.id)
+    count = db.get_download_count(message.from_user.id)
     remaining = max(0, FREE_LIMIT - count)
     is_sub = await check_subscription(message.from_user.id)
     sub_status = "✅ Подписан" if is_sub else "❌ Не подписан"
@@ -115,34 +113,32 @@ async def cmd_stats(message: Message):
         "📊 <b>Твоя статистика</b>\n\n"
         f"📥 Всего скачиваний: <b>{count}</b>\n"
         f"🎁 Бесплатных осталось: <b>{remaining}</b>\n"
-        f"📢 Подписка на канал: {sub_status}"
+        f"📢 Подписка: {sub_status}"
     )
     await message.answer(text, parse_mode="HTML")
 
 
+# ─── /admin ───────────────────────────────────────────────────────────────────
 @dp.message(Command("admin"))
 async def cmd_admin(message: Message):
-    """Статистика для админов."""
     if message.from_user.id not in ADMIN_IDS:
         return
 
-    total_users = await db.get_total_users()
-    today = await db.get_today_stats()
+    total_users = db.get_total_users()
+    today = db.get_today_stats()
     today_dl = today[1] if today else 0
-    today_users = today[2] if today else 0
 
     text = (
         "🛠 <b>Админ-панель</b>\n\n"
         f"👥 Всего пользователей: <b>{total_users}</b>\n"
-        f"📥 Скачиваний сегодня: <b>{today_dl}</b>\n"
-        f"🆕 Новых сегодня: <b>{today_users}</b>"
+        f"📥 Скачиваний сегодня: <b>{today_dl}</b>"
     )
     await message.answer(text, parse_mode="HTML")
 
 
+# ─── /broadcast ───────────────────────────────────────────────────────────────
 @dp.message(Command("broadcast"))
 async def cmd_broadcast(message: Message):
-    """Рассылка (только для админов). /broadcast Текст сообщения"""
     if message.from_user.id not in ADMIN_IDS:
         return
 
@@ -151,17 +147,19 @@ async def cmd_broadcast(message: Message):
         await message.answer("Использование: /broadcast Текст")
         return
 
-    user_ids = await db.get_all_user_ids()
+    user_ids = db.get_all_user_ids()
     sent, failed = 0, 0
     status_msg = await message.answer(f"⏳ Рассылаю {len(user_ids)} пользователям...")
 
     for uid in user_ids:
         try:
+            if bot is None:
+                break
             await bot.send_message(uid, text, parse_mode="HTML")
             sent += 1
         except (TelegramForbiddenError, TelegramBadRequest):
             failed += 1
-        await asyncio.sleep(0.05)  # ~20 сообщений/сек, не нарушаем лимиты
+        await asyncio.sleep(0.05)  # ~20 сообщений/сек
 
     await status_msg.edit_text(
         f"✅ Рассылка завершена\n"
@@ -170,12 +168,12 @@ async def cmd_broadcast(message: Message):
     )
 
 
-# ─── Callback: проверка подписки ────────────────────────────────────────────
+# ─── Callback: проверка подписки ──────────────────────────────────────────────
 @dp.callback_query(F.data == "check_sub")
 async def callback_check_sub(call: CallbackQuery):
     is_sub = await check_subscription(call.from_user.id)
     if is_sub:
-        await db.set_subscribed(call.from_user.id, True)
+        db.set_subscribed(call.from_user.id, True)
         await call.message.edit_text(
             "✅ <b>Подписка подтверждена!</b>\n\n"
             "Теперь можешь скачивать без ограничений.\n"
@@ -187,7 +185,7 @@ async def callback_check_sub(call: CallbackQuery):
         await call.message.edit_reply_markup(reply_markup=check_again_keyboard())
 
 
-# ─── Основной обработчик ссылок ─────────────────────────────────────────────
+# ─── Основной обработчик ──────────────────────────────────────────────────────
 @dp.message(F.text)
 async def handle_url(message: Message):
     url = message.text.strip()
@@ -197,50 +195,40 @@ async def handle_url(message: Message):
         return
 
     user_id = message.from_user.id
-    await db.upsert_user(user_id, message.from_user.username or "", message.from_user.first_name or "")
+    db.upsert_user(user_id, message.from_user.username or "", message.from_user.first_name or "")
 
-    # ── Антиспам ────────────────────────────────────────────────────────────
     if is_rate_limited(user_id):
-        await message.answer(
-            f"⏱ Подожди немного между запросами ({RATE_LIMIT_SECONDS} сек)"
-        )
+        await message.answer(f"⏱ Подожди {RATE_LIMIT_SECONDS} сек между запросами")
         return
 
-    # ── Проверка лимита ─────────────────────────────────────────────────────
-    count = await db.get_download_count(user_id)
+    count = db.get_download_count(user_id)
     if count >= FREE_LIMIT:
         is_sub = await check_subscription(user_id)
         if not is_sub:
-            await db.set_subscribed(user_id, False)
-            remaining_text = (
-                f"🎁 Ты использовал все <b>{FREE_LIMIT}</b> бесплатных скачивания.\n\n"
-                f"Чтобы продолжить скачивать <b>бесплатно и без ограничений</b> — "
-                f"подпишись на наш канал <b>{CHANNEL_NAME}</b>!\n\n"
-                "После подписки нажми кнопку ниже ✅"
-            )
+            db.set_subscribed(user_id, False)
             await message.answer(
-                remaining_text,
+                f"🎁 Ты использовал все <b>{FREE_LIMIT}</b> бесплатных скачивания.\n\n"
+                f"Чтобы продолжить — подпишись на канал <b>{CHANNEL_NAME}</b>!\n\n"
+                "После подписки нажми кнопку ниже ✅",
                 parse_mode="HTML",
                 reply_markup=subscribe_keyboard(CHANNEL_URL, CHANNEL_ID),
             )
             return
 
-    # ── Скачивание ──────────────────────────────────────────────────────────
     wait_msg = await message.answer("⏳ Скачиваю видео, подожди...")
 
     file_path = None
     try:
         file_path = await download_video(url)
 
-        if not file_path or not __import__("os").path.exists(file_path):
+        if not file_path or not os.path.exists(file_path):
             raise FileNotFoundError("Файл не создан")
 
         video = FSInputFile(file_path)
         await message.answer_video(video=video, caption=AD_CAPTION)
-        await db.increment_downloads(user_id)
-        await db.log_download(user_id, url, "success")
+        db.increment_downloads(user_id)
+        db.log_download(user_id, url, "success")
 
-        # Показываем остаток бесплатных
         new_count = count + 1
         remaining = FREE_LIMIT - new_count
         if 0 < remaining <= 2:
@@ -251,14 +239,14 @@ async def handle_url(message: Message):
             )
         elif remaining == 0:
             await message.answer(
-                f"⚠️ Это было твоё последнее бесплатное скачивание!\n"
+                f"⚠️ Это было последнее бесплатное скачивание!\n"
                 f"Подпишись на канал чтобы продолжить: {CHANNEL_URL}"
             )
 
     except Exception as e:
         err_text = str(e)
-        logger.error(f"Ошибка скачивания [{user_id}] {url}: {err_text}")
-        await db.log_download(user_id, url, f"error: {err_text[:100]}")
+        logger.error(f"Ошибка [{user_id}] {url}: {err_text}")
+        db.log_download(user_id, url, f"error: {err_text[:100]}")
 
         if "filesize" in err_text.lower() or "too large" in err_text.lower():
             await message.answer("❌ Видео слишком большое (лимит 50 МБ)")
@@ -267,7 +255,7 @@ async def handle_url(message: Message):
         elif "unsupported" in err_text.lower():
             await message.answer("❌ Этот сайт не поддерживается")
         else:
-            await message.answer(f"❌ Не удалось скачать видео\nПопробуй другую ссылку")
+            await message.answer("❌ Не удалось скачать. Попробуй другую ссылку")
     finally:
         try:
             await wait_msg.delete()
@@ -277,18 +265,26 @@ async def handle_url(message: Message):
             cleanup(file_path)
 
 
-# ─── Main ────────────────────────────────────────────────────────────────────
+# ─── Main ─────────────────────────────────────────────────────────────────────
 async def main():
-    await db.init_db()
-    logger.info("✅ База данных инициализирована")
+    global bot
+    if not TOKEN:
+        raise RuntimeError("BOT_TOKEN не задан в переменных окружения")
+    bot = Bot(token=TOKEN)
 
-    # Запускаем HTTP-сервер в отдельном потоке
     threading.Thread(target=run_web, daemon=True).start()
     logger.info("✅ Web-сервер запущен")
+
+    await db.init_db()
+    logger.info("✅ База данных (Turso) инициализирована")
 
     logger.info("🚀 Бот запущен!")
     await dp.start_polling(bot, allowed_updates=["message", "callback_query"])
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except Exception:
+        logger.exception("❌ Фатальная ошибка при запуске")
+        raise
