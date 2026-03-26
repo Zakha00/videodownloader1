@@ -1,6 +1,12 @@
 import os
-import libsql_experimental as libsql
 from datetime import datetime
+
+try:
+    import libsql_experimental as libsql
+except ModuleNotFoundError:
+    # В некоторых окружениях пакет libsql-experimental
+    # предоставляет модуль с именем `libsql`.
+    import libsql
 
 TURSO_URL = os.getenv("TURSO_DB_URL", "")
 TURSO_TOKEN = os.getenv("TURSO_DB_TOKEN", "")
