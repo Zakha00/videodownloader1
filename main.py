@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import sys
 import threading
 import time
 from collections import defaultdict
@@ -24,6 +25,13 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+# На Render stdout часто не TTY — логи буферизуются и «пропадают» до конца процесса.
+try:
+    sys.stdout.reconfigure(line_buffering=True)  # type: ignore[attr-defined]
+    sys.stderr.reconfigure(line_buffering=True)  # type: ignore[attr-defined]
+except Exception:
+    pass
 
 # ─── Конфиг ──────────────────────────────────────────────────────────────────
 TOKEN       = os.getenv("BOT_TOKEN", "")
@@ -471,15 +479,31 @@ async def handle_url(message: Message):
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
 async def main():
+    if not TOKEN.strip():
+        raise RuntimeError(
+            "BOT_TOKEN пустой. В Render → Environment добавьте BOT_TOKEN и сделайте redeploy."
+        )
+
     db.init_db()
     logger.info("✅ БД инициализирована (Turso)")
 
     threading.Thread(target=_run_web, daemon=True).start()
     logger.info("✅ Web-сервер запущен")
 
-    logger.info("🚀 Бот запущен!")
+    # Сбрасываем webhook, иначе long polling может не получать апдейты.
+    await bot.delete_webhook(drop_pending_updates=False)
+    logger.info("✅ Webhook сброшен (режим polling)")
+
+    me = await bot.get_me()
+    logger.info("✅ Telegram ответил: @%s (id=%s)", me.username, me.id)
+
+    logger.info("🚀 Старт long polling...")
     await dp.start_polling(bot, allowed_updates=["message", "callback_query"])
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except Exception:
+        logger.exception("❌ Ошибка при запуске — смотрите traceback ниже")
+        raise
