@@ -284,6 +284,10 @@ async def main():
     if not TOKEN:
         raise RuntimeError("BOT_TOKEN не задан в переменных окружения")
     bot = Bot(token=TOKEN)
+    # На Render иногда остаётся старый webhook (или следы прошлых запусков),
+    # из-за чего polling получает 0 апдейтов.
+    await bot.delete_webhook(drop_pending_updates=False)
+    logger.info("✅ Webhook отключен, работаем в polling режиме")
 
     threading.Thread(target=run_web, daemon=True).start()
     logger.info("✅ Web-сервер запущен")
