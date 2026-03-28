@@ -15,7 +15,7 @@ from aiogram.enums import ChatType
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.filters import CommandStart, Command
 from aiogram.types import (
-    CallbackQuery, FSInputFile, Message,
+    CallbackQuery, ErrorEvent, FSInputFile, Message,
     InputMediaPhoto, InputMediaVideo,
 )
 
@@ -71,6 +71,22 @@ def _run_web():
 # ─── Bot & Dispatcher ─────────────────────────────────────────────────────────
 bot = Bot(token=TOKEN)
 dp  = Dispatcher()
+
+
+@dp.errors()
+async def _errors_handler(event: ErrorEvent) -> None:
+    """Логирует падения хендлеров; /help без БД работает, а /start и ссылки — нет при ошибке БД."""
+    logger.exception("Ошибка в хендлере: %s", event.exception)
+    msg = event.update.message
+    if msg:
+        try:
+            await msg.answer(
+                "⚠️ Не удалось выполнить запрос (часто это сбой базы Turso или сети). "
+                "Попробуйте через минуту. Команда /help работает без сохранения данных."
+            )
+        except Exception:
+            pass
+
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -199,29 +215,52 @@ async def _send_result(
 @dp.message(CommandStart())
 async def cmd_start(message: Message):
     uid  = message.from_user.id
-    args = message.text.split(maxsplit=1)
+    text = message.text or ""
+    args = text.split(maxsplit=1)
 
-    db.upsert_user(uid, message.from_user.username or "", message.from_user.first_name or "")
+    try:
+        db.upsert_user(uid, message.from_user.username or "", message.from_user.first_name or "")
+    except Exception as e:
+        logger.exception("БД (upsert_user) в /start: %s", e)
+        await message.answer(
+            "⚠️ База данных сейчас недоступна. Проверьте переменные "
+            "<code>TURSO_DB_URL</code> и <code>TURSO_DB_TOKEN</code> на Render.",
+            parse_mode="HTML",
+        )
+        return
 
     # Реферал
     if len(args) > 1 and args[1].startswith("ref_"):
         try:
             ref_id = int(args[1][4:])
-            if db.register_referral(ref_id, uid):
-                try:
-                    await bot.send_message(
-                        ref_id,
-                        f"🎉 По твоей ссылке пришёл новый пользователь!\n"
-                        f"+{db.REFERRAL_BONUS} скачивания тебе 🎁"
-                    )
-                except Exception:
-                    pass
         except ValueError:
-            pass
+            ref_id = None
+        if ref_id is not None:
+            try:
+                if db.register_referral(ref_id, uid):
+                    try:
+                        await bot.send_message(
+                            ref_id,
+                            f"🎉 По твоей ссылке пришёл новый пользователь!\n"
+                            f"+{db.REFERRAL_BONUS} скачивания тебе 🎁"
+                        )
+                    except Exception:
+                        pass
+            except Exception as e:
+                logger.exception("БД (referral) в /start: %s", e)
 
-    rem   = db.remaining_downloads(uid)
-    total = db.downloads_allowed(uid)
-    bu    = await get_bot_username()
+    try:
+        rem   = db.remaining_downloads(uid)
+        total = db.downloads_allowed(uid)
+    except Exception as e:
+        logger.exception("БД (лимиты) в /start: %s", e)
+        await message.answer(
+            "⚠️ Не удалось прочитать лимиты из базы. Проверьте Turso на Render.",
+            parse_mode="HTML",
+        )
+        return
+
+    bu = await get_bot_username()
     rlink = f"https://t.me/{bu}?start=ref_{uid}"
 
     await message.answer(
@@ -610,10 +649,10 @@ async def group_cmd_download(message: Message):
 # ══════════════════════════════════════════════════════════════════════════════
 #  Основной обработчик ссылок (личный чат)
 # ══════════════════════════════════════════════════════════════════════════════
-@dp.message(F.text, F.chat.type == ChatType.PRIVATE)
+@dp.message(F.text, F.chat.type == ChatType.PRIVATE, ~F.text.startswith("/"))
 async def handle_url(message: Message):
     uid = message.from_user.id
-    url = message.text.strip()
+    url = (message.text or "").strip()
 
     if not is_valid_url(url):
         await message.answer(
@@ -624,7 +663,16 @@ async def handle_url(message: Message):
         )
         return
 
-    db.upsert_user(uid, message.from_user.username or "", message.from_user.first_name or "")
+    try:
+        db.upsert_user(uid, message.from_user.username or "", message.from_user.first_name or "")
+    except Exception as e:
+        logger.exception("БД (upsert_user) при ссылке: %s", e)
+        await message.answer(
+            "⚠️ Не удалось сохранить профиль в базе (Turso). "
+            "Проверьте секреты на Render и статус базы.",
+            parse_mode="HTML",
+        )
+        return
 
     if is_rate_limited(uid):
         await message.answer("⏱ Не так быстро! Подожди немного.")
