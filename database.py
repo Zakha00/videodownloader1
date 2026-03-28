@@ -76,6 +76,40 @@ def init_db():
         );
     """)
     c.commit()
+    _migrate_users_columns()
+
+
+def _migrate_users_columns() -> None:
+    """
+    Старые базы Turso могли создать `users` без новых колонок.
+    CREATE TABLE IF NOT EXISTS не добавляет поля — тогда row[COL_*] даёт IndexError/TypeError.
+    """
+    c = _c()
+    rows = c.execute("PRAGMA table_info(users)").fetchall()
+    if not rows:
+        return
+    have = {str(r[1]) for r in rows}
+    alters = []
+    if "subscription_grants" not in have:
+        alters.append("ALTER TABLE users ADD COLUMN subscription_grants INTEGER DEFAULT 0")
+    if "referral_bonus" not in have:
+        alters.append("ALTER TABLE users ADD COLUMN referral_bonus INTEGER DEFAULT 0")
+    if "referrer_id" not in have:
+        alters.append("ALTER TABLE users ADD COLUMN referrer_id INTEGER DEFAULT NULL")
+    if "joined_at" not in have:
+        alters.append(
+            "ALTER TABLE users ADD COLUMN joined_at TEXT DEFAULT (datetime('now'))"
+        )
+    if "last_active" not in have:
+        alters.append(
+            "ALTER TABLE users ADD COLUMN last_active TEXT DEFAULT (datetime('now'))"
+        )
+    if "downloads" not in have:
+        alters.append("ALTER TABLE users ADD COLUMN downloads INTEGER DEFAULT 0")
+    for sql in alters:
+        c.execute(sql)
+    if alters:
+        c.commit()
 
 
 # ─── Users ────────────────────────────────────────────────────────────────────
@@ -105,8 +139,15 @@ def upsert_user(user_id: int, username: str, first_name: str):
 
 
 def get_user(user_id: int):
+    # Явный порядок колонок совпадает с COL_* (не зависит от порядка в старой таблице).
     return _c().execute(
-        "SELECT * FROM users WHERE user_id = ?", (user_id,)
+        """
+        SELECT user_id, username, first_name, downloads,
+               subscription_grants, referral_bonus, referrer_id,
+               joined_at, last_active
+        FROM users WHERE user_id = ?
+        """,
+        (user_id,),
     ).fetchone()
 
 
