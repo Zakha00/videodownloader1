@@ -10,6 +10,40 @@ DOWNLOAD_PATH.mkdir(exist_ok=True)
 
 MAX_MB = 48   # Telegram limit with margin
 
+# Instagram / Meta часто режут «ботов» и датацентры; без cookies Reels могут падать с "unavailable".
+# Опционально: путь к Netscape cookies.txt (экспорт из браузера) — переменная на Render.
+_COOKIEFILE = (os.getenv("YTDLP_COOKIEFILE") or os.getenv("COOKIEFILE") or "").strip()
+
+_YDL_COMMON = {
+    "quiet": True,
+    "no_warnings": True,
+    "noplaylist": True,
+    "retries": 3,
+    "fragment_retries": 5,
+    "socket_timeout": 60,
+    "http_headers": {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+    },
+}
+
+
+def _merge_opts(extra: dict) -> dict:
+    o = {**_YDL_COMMON, **extra}
+    if _COOKIEFILE and Path(_COOKIEFILE).is_file():
+        o["cookiefile"] = _COOKIEFILE
+    return o
+
+
+def normalize_url(url: str) -> str:
+    """Убирает хвост ?igsh=… и # — иногда мешают экстрактору."""
+    u = url.strip().split("#")[0].split("?")[0]
+    return u.rstrip("/") or url.strip()
+
 _FORMAT_OPTS = {
     "video": {
         "format": (
@@ -66,16 +100,15 @@ def _find_file(video_id: str, suffix: str | None = None) -> str | None:
 
 
 def _sync_download(url: str, fmt: str) -> DownloadResult:
+    url = normalize_url(url)
     out_tpl = str(DOWNLOAD_PATH / "%(id)s.%(ext)s")
-    opts = {
-        "outtmpl":       out_tpl,
-        "quiet":         True,
-        "no_warnings":   True,
-        "noplaylist":    True,
-        "socket_timeout": 30,
-        "max_filesize":  MAX_MB * 1024 * 1024,
-        **_FORMAT_OPTS[fmt],
-    }
+    opts = _merge_opts(
+        {
+            "outtmpl": out_tpl,
+            "max_filesize": MAX_MB * 1024 * 1024,
+            **_FORMAT_OPTS[fmt],
+        }
+    )
 
     with yt_dlp.YoutubeDL(opts) as ydl:
         info  = ydl.extract_info(url, download=True)
@@ -107,14 +140,14 @@ def _sync_download(url: str, fmt: str) -> DownloadResult:
 
 def _sync_download_photos(url: str) -> DownloadResult:
     """Скачивает фото/карусель (Instagram, VK и т.п.)."""
+    url = normalize_url(url)
     out_tpl = str(DOWNLOAD_PATH / "%(id)s_%(autonumber)03d.%(ext)s")
-    opts = {
-        "outtmpl":       out_tpl,
-        "quiet":         True,
-        "no_warnings":   True,
-        "format":        "best",
-        "socket_timeout": 30,
-    }
+    opts = _merge_opts(
+        {
+            "outtmpl": out_tpl,
+            "format": "best",
+        }
+    )
 
     with yt_dlp.YoutubeDL(opts) as ydl:
         info  = ydl.extract_info(url, download=True)
