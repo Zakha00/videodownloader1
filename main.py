@@ -37,6 +37,8 @@ logger = logging.getLogger(__name__)
 TOKEN      = os.getenv("BOT_TOKEN", "")
 ADMIN_IDS  = [int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip()]
 CHANNEL_ID = os.getenv("CHANNEL_ID", "")   # @username или -100xxx — для проверки подписки
+# Для реф. ссылок https://t.me/USERNAME?start=... Если пусто — берётся username из getMe().
+BOT_USERNAME = (os.getenv("BOT_USERNAME") or "").strip().lstrip("@")
 
 # ─── Антиспам (in-memory) ─────────────────────────────────────────────────────
 _last_req: dict[int, float] = defaultdict(float)
@@ -110,8 +112,14 @@ async def check_sub(uid: int) -> bool:
 
 
 async def get_bot_username() -> str:
+    """Username для ссылок t.me/... Задайте BOT_USERNAME в Render, если getMe() даёт не то имя."""
+    if BOT_USERNAME:
+        return BOT_USERNAME
     me = await bot.get_me()
-    return me.username
+    u = (me.username or "").strip()
+    if not u:
+        logger.warning("У бота нет @username — задайте BOT_USERNAME в Render (Environment).")
+    return u
 
 
 def _sub_wall(uid: int) -> tuple[str, str]:
@@ -574,10 +582,26 @@ async def cb_format(call: CallbackQuery):
 
     except Exception as e:
         err = str(e).lower()
+        url_l = (url or "").lower()
         db.log_download(uid, url, "", fmt, f"err:{str(e)[:80]}")
         logger.error(f"Download [{uid}] [{fmt}] {url}: {e}")
 
-        if "private" in err or "unavailable" in err or "not available" in err:
+        ig = "instagram.com" in url_l
+        if ig and (
+            "private" in err
+            or "unavailable" in err
+            or "not available" in err
+            or "login required" in err
+        ):
+            msg = (
+                "❌ Instagram не отдал видео с сервера (часто так с Reels).\n\n"
+                "Это не обязательно «закрытый» ролик: Meta режет IP датацентров.\n"
+                "Что можно сделать:\n"
+                "• попробовать ту же ссылку с YouTube/TikTok;\n"
+                "• на Render задать файл cookies: переменная "
+                "<code>YTDLP_COOKIEFILE</code> (путь к cookies.txt)."
+            )
+        elif "private" in err or "unavailable" in err or "not available" in err:
             msg = "❌ Видео недоступно или приватное."
         elif "unsupported" in err:
             msg = "❌ Этот сайт не поддерживается."
@@ -585,10 +609,15 @@ async def cb_format(call: CallbackQuery):
             msg = "❌ Видео требует входа (приватный аккаунт)."
         elif "not found" in err:
             msg = "❌ Видео не найдено — возможно удалено."
+        elif "403" in err or "forbidden" in err or "blocked" in err or "rate" in err:
+            msg = (
+                "❌ Сервис видео временно заблокировал запрос (лимит/IP). "
+                "Попробуйте позже или другую платформу."
+            )
         else:
             msg = "❌ Не удалось скачать. Попробуй другую ссылку."
 
-        await call.message.edit_text(msg)
+        await call.message.edit_text(msg, parse_mode="HTML")
 
     finally:
         cleanup(*all_paths)
